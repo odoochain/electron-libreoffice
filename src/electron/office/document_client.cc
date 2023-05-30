@@ -273,10 +273,12 @@ void DocumentClient::HandleStateChange(std::string payload) {
 }
 
 void DocumentClient::OnClipboardChanged() {
+  LOG(ERROR) << "Clipboard changed";
   std::vector<std::string> mime_types;
 
   mime_types.push_back("text/plain;charset=utf-8");
   mime_types.push_back("image/png");
+  mime_types.push_back("image/bmp");
 
   std::vector<const char*> mime_c_str;
 
@@ -314,7 +316,12 @@ void DocumentClient::OnClipboardChanged() {
     } else if (mime_type == "image/png") {
       writer.WritePickledData(base::Pickle(out_streams[i], buffer_size),
                               ui::ClipboardFormatType::PngType());
+    } else if (mime_type == "image/bmp") {
+      LOG(ERROR) << "BMP: " << buffer_size;
+      /* writer.WritePickledData(base::Pickle(out_streams[i], buffer_size), */
+      /*                         ui::ClipboardFormatType::PngType()); */
     }
+
   }
 }
 

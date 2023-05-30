@@ -23,7 +23,7 @@ picker.onchange = async () => {
     uri = encodeURI(
       'file:///' + picker.files[0].path.replace(/\\/g, '/')
     );
-    runColorizeWorker();
+    // runColorizeWorker();
     const doc = await libreoffice.loadDocument(uri);
     globalDoc = doc;
 
