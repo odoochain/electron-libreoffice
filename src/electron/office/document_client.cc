@@ -447,6 +447,19 @@ void DocumentClient::PostUnoCommand(const std::string& command,
 void DocumentClient::PostUnoCommandInternal(const std::string& command,
                                             char* json_buffer,
                                             bool notifyWhenFinished) {
+  if (document_->getView() <= 0) {
+    LOG(ERROR) << "RESETTING DOCUMENT";
+    int* pArray = nullptr;
+    size_t entries = 0;
+    document_->getViewIds(pArray, entries);
+    for (size_t i = 0; i < entries; ++i) {
+      LOG(ERROR) << "VIEW ID" << pArray[i];
+      if (pArray[i] > 0) {
+        document_->setView(pArray[i]);
+        break;
+      }
+    }
+  }
   document_->postUnoCommand(command.c_str(), json_buffer, notifyWhenFinished);
 }
 
