@@ -1,0 +1,84 @@
+warn:SwCursor::Find_Text:24957:4668668:sw/source/core/crsr/findtxt.cxx:1018: IN HERE
+warn:SwCursor::FindAll:24957:4668668:sw/source/core/crsr/swcrsr.cxx:948: I AM IN FIND ALL
+warn:lcl_FindSelection:24957:4668668:sw/source/core/crsr/swcrsr.cxx:797: DO FIND HERRE
+warn:SwFindParaText::DoFind:24957:4668668:sw/source/core/crsr/findtxt.cxx:957: waiting
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189:  TBC – waiting for client confirmation.
+warn:lcl_FindSelection:24957:4668668:sw/source/core/crsr/swcrsr.cxx:797: DO FIND HERRE
+warn:SwFindParaText::DoFind:24957:4668668:sw/source/core/crsr/findtxt.cxx:957: waiting
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189:  TBC – waiting for client confirmation.
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189:
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: 1541848.01-LONSR01A             MSW - Draft March 2, 2020 - 12:18
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: 1541848.01-LONSR01A             MSW - Draft March 2, 2020 - 12:18
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: Date 1 January 2010
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: Agreement
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: made between
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: [ABC GROUP LIMITED]
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: and
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: [XYZ]
+warn:legacy.osl:24957:4668668:sw/source/core/crsr/findtxt.cxx:322: unknown case in lcl_CleanStr
+
+
+------
+
+warn:SwCursor::Find_Text:24957:4668668:sw/source/core/crsr/findtxt.cxx:1018: IN HERE
+warn:SwCursor::FindAll:24957:4668668:sw/source/core/crsr/swcrsr.cxx:948: I AM IN FIND ALL
+warn:lcl_FindSelection:24957:4668668:sw/source/core/crsr/swcrsr.cxx:797: DO FIND HERRE
+warn:SwFindParaText::DoFind:24957:4668668:sw/source/core/crsr/findtxt.cxx:957: waiting
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189:  TBC – waiting for client confirmation.
+warn:lcl_FindSelection:24957:4668668:sw/source/core/crsr/swcrsr.cxx:797: DO FIND HERRE
+warn:SwFindParaText::DoFind:24957:4668668:sw/source/core/crsr/findtxt.cxx:957: waiting
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189:  TBC – waiting for client confirmation.
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189:
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: 1541848.01-LONSR01A             MSW - Draft March 2, 2020 - 12:18
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: 1541848.01-LONSR01A             MSW - Draft March 2, 2020 - 12:18
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: Date 1 January 2010
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: Agreement
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: made between
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: [ABC GROUP LIMITED]
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: and
+warn:DoSearch:24957:4668668:sw/source/core/crsr/findtxt.cxx:711: HERE
+warn:bSrchForward:24957:4668668:sw/source/core/crsr/findtxt.cxx:767: lcl_CleanStr
+warn:CLEANING STRING:24957:4668668:sw/source/core/crsr/findtxt.cxx:189: [XYZ]
+warn:legacy.osl:24957:4668668:sw/source/core/crsr/findtxt.cxx:322: unknown case in lcl_CleanStr

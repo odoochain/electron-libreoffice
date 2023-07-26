@@ -31,7 +31,9 @@ picker.onchange = async () => {
     uri = encodeURI('file:///' + picker.files[0].path.replace(/\\/g, '/'));
     const doc = await libreoffice.loadDocument(uri);
     globalDoc = doc;
-    runColorizeWorker();
+    // runColorizeWorker();
+
+    innerFind("a");
 
     embed.renderDocument(doc);
     thumb.renderDocument(doc);
@@ -99,15 +101,55 @@ function insertAnnotation() {
 }
 
 function changeAuthor() {
-    globalDoc.setAuthor('New author');
+  globalDoc.setAuthor('New author');
+}
+
+function formatFindReplaceArgs({
+  searchString,
+  searchStartPoint,
+  replaceString,
+  backward,
+  findReplaceCommand,
+}) {
+  let nCommand;
+  switch (findReplaceCommand) {
+    case 'FIND_ALL':
+      nCommand = 1;
+      break;
+    case 'REPLACE':
+      nCommand = 2;
+      break;
+    case 'REPLACE_ALL':
+      nCommand = 3;
+      break;
+    default: // FIND is the default case
+      nCommand = 0;
+  }
+
+  return {
+    'SearchItem.SearchString': { value: searchString, type: 'string' },
+    'SearchItem.SearchStartPointX': {
+      value: searchStartPoint ? searchStartPoint.x : 0,
+      type: 'long',
+    },
+    'SearchItem.SearchStartPointY': {
+      value: searchStartPoint ? searchStartPoint.y : 0,
+      type: 'long',
+    },
+    'SearchItem.ReplaceString': { value: replaceString ?? '', type: 'string' },
+    'SearchItem.Command': { value: nCommand, type: 'long' },
+    'SearchItem.Backward': { value: !!backward, type: 'boolean' },
+  };
+}
+
+function postUnoSearch() {
+  const args = formatFindReplaceArgs({ searchString: 'waiting', findReplaceCommand: 'FIND_ALL' })
+
+  globalDoc.postUnoCommand('.uno:ExecuteSearch', args)
 }
 
 function getTrackChanges() {
   console.log('TC INFO', globalDoc.getCommandValues('.uno:ViewTrackChangesInformation'));
-}
-
-function getComments() {
-  console.log('COMMENT INFO', { comments });
 }
 
 function acceptTrackChange() {
@@ -496,6 +538,57 @@ function saveOverlays() {
   const start = Date.now()
   globalDoc.postUnoCommand('.uno:Save');
   console.log(`took ${Date.now() - start}ms to save`);
+}
+
+function textViewLayoutSupplier(doc) {
+  return doc.getCurrentController()?.as('text.XTextViewLayoutSupplier');
+}
+
+function innerFind(findValue) {
+  if (!globalDoc) return;
+  const xDoc =
+    globalDoc.as('text.XTextDocument');
+  const xDocSearchable =
+    globalDoc.as('util.XSearchable');
+  if (!xDoc || !xDocSearchable) return;
+  const layoutSupplier = textViewLayoutSupplier(xDoc);
+  const text = xDoc.getText();
+  if (!text || !layoutSupplier) return;
+
+  const xSearchDescr =
+    xDocSearchable.createSearchDescriptor();
+  xSearchDescr.setSearchString(findValue);
+  const xFound = xDocSearchable.findAll(xSearchDescr);
+  console.log("FIND COUNT", xFound.getCount());
+  for (let i = 0; i < xFound.getCount(); i++) {
+    const textRange =
+      xFound.getByIndex(i);
+
+    if (!textRange) continue;
+
+    // must turn the search result XTextRange into an XTextCursor before getting the rects because
+    // the underlying cursor is actually an XParagraphCursor even if the XTextRange text isn't the
+    // entire paragraph
+    try {
+      const textCursor = text.createTextCursor();
+      textCursor.gotoRange(textRange, false);
+      const props = textCursor.as('beans.XPropertySet');
+      if (!props) continue;
+      props.setPropertyValue('CharColor', 8388736);
+    } catch (err) {
+      console.error(err)
+    }
+  }
+}
+
+function execFindGood() {
+  const findValue = 'agr';
+  innerFind(findValue)
+}
+
+function execFindBad() {
+  const findValue = 'waiting'
+  innerFind(findValue)
 }
 
 
