@@ -1,39 +1,5 @@
 /// <reference path="../src/electron/npm/libreoffice.d.ts" />
-const picker = document.getElementById('el-picker');
-const embed = document.getElementById('el-embed');
-const thumb = document.getElementById('el-thumb');
-
-// libreoffice.on('status_indicator_set_value', (x) => {
-//   console.log(x);
-// });
-
-// libreoffice.on('status_changed', (x) => {
-//   console.log('lo', x);
-// });
-
-// libreoffice.on('window', (x) => {
-//   console.log('lo', x);
-// });
-
-window.addEventListener('beforeunload', () => {
-  libreoffice._beforeunload();
-});
-
-let globalDoc;
-let zoom = 1.0;
-let uri;
-
-const definitionsMap = new Map();
-const definitionReferencesMap = new Map();
-
-picker.onchange = async () => {
-  if (picker.files.length === 1) {
-    uri = encodeURI('file:///' + picker.files[0].path.replace(/\\/g, '/'));
-    const doc = await libreoffice.loadDocument(uri);
-    globalDoc = doc;
-    // runColorizeWorker();
-
-    innerFind("a");
+innerFind("a");
 
     embed.renderDocument(doc);
     thumb.renderDocument(doc);
@@ -571,6 +537,7 @@ function innerFind(findValue) {
     // entire paragraph
     try {
       const textCursor = text.createTextCursor();
+      textCursor.gotoStart(false);
       textCursor.gotoRange(textRange, false);
       const props = textCursor.as('beans.XPropertySet');
       if (!props) continue;
