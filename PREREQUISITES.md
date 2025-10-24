@@ -24,9 +24,9 @@ _Windows_:
 - Visual Studio 2019 / Windows 11 SDK 10.0.22621.0 / Windows 10 SDK 10.015063.4368 / Windows 10 SDK 10.0.20348.0
   - Can be quickly installed by running this in an Admin PowerShell `Windows Key+X > Windows PowerShell (admin)`:
     ``` powershell
-    Set-ExecutionPolicy Unrestricted
+    Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope CurrentUser
     .\scripts\toolchain\install.ps1
-    Set-ExecutionPolicy Restricted
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser 
     ```
     - You might need to install the powershell visual studio tools if the above command is failing because of missing `VSSetup`
     ``` powershell
