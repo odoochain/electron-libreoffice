@@ -2,19 +2,18 @@
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
-#ifndef OFFICE_LOK_CALLBACK_H_
-#define OFFICE_LOK_CALLBACK_H_
+#pragma once
 
 #include <string>
 #include "ui/gfx/geometry/rect.h"
 #include "v8/include/v8-isolate.h"
 #include "v8/include/v8-json.h"
 #include "v8/include/v8-local-handle.h"
-#include "v8/include/v8-object.h"
 
 namespace electron::office::lok_callback {
 
 std::string TypeToEventString(int type);
+int EventStringToType(const std::u16string& event_string);
 bool IsTypeJSON(int type);
 bool IsTypeCSV(int type);
 bool IsTypeMultipleCSV(int type);
@@ -32,9 +31,6 @@ std::vector<gfx::Rect> ParseMultipleRects(
     std::string_view::const_iterator end,
     size_t size);
 
-std::pair<std::string, std::string> ParseStatusChange(std::string payload);
-std::pair<std::string, bool> ParseUnoCommandResult(std::string payload);
-
 v8::Local<v8::Value> ParseJSON(v8::Isolate* isolate,
                                v8::Local<v8::String> json);
 v8::Local<v8::Value> PayloadToLocalValue(v8::Isolate* isolate,
@@ -51,4 +47,4 @@ inline float TwipToPixel(float in, float zoom) {
 }
 
 }  // namespace electron::office::lok_callback
-#endif  // OFFICE_LOK_CALLBACK_H_
+

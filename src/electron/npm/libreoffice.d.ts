@@ -10,15 +10,27 @@ interface HTMLLibreOfficeEmbed<Client = LibreOffice.DocumentClient>
   /**
    * renders a LibreOffice.DocumentClient
    * @param doc the DocumentClient to be rendered
-   * @returns a Promise which is true if render succeeded or false if render failed
+   * @param options options for rendering the document
+   * @returns a unique restore key to restore the tiles if the embed is destroyed, empty if rendering failed
    */
-  renderDocument(doc: Client): Promise<boolean>;
+  renderDocument(
+    doc: Client,
+    options?: {
+      /** the initial zoom level */
+      zoom?: number;
+      /** disable input **/
+      disableInput?: boolean;
+      /** restore key from a previous call to renderDocument **/
+      restoreKey?: string;
+    }
+  ): string;
   /**
    * description converts twip to a css px
    * @param input - twip
    * @returns css px
    */
   twipToPx(input: number): number;
+  invalidateAllTiles(): void;
   /** The rectangles for the bounds of each page in the document, units are CSS pixels */
   get pageRects(): LibreOffice.PageRect[];
   /** The rectangles for the bounds of each page in the document, units are CSS pixels */
@@ -39,10 +51,15 @@ interface HTMLLibreOfficeEmbed<Client = LibreOffice.DocumentClient>
 }
 
 declare namespace LibreOffice {
-  type ClipboardItem = {
-    mimeType: string;
-    buffer: ArrayBuffer;
-  };
+  type ClipboardItem =
+    | {
+        mimeType: 'text/plain' | 'text/html';
+        text: string;
+      }
+    | {
+        mimeType: 'image/png';
+        buffer: ArrayBuffer;
+      };
 
   /** Size in CSS pixels */
   type Size = {
@@ -79,13 +96,37 @@ declare namespace LibreOffice {
     | string
     | { commandId: string; value: any; viewId?: number };
 
-  interface DocumentEvents {
+  type ContextMenuSeperator = { type: 'separator' };
+  type ContextMenuCommand<Commands> = {
+    type: 'command';
+    text: string;
+    enabled: 'false' | 'true';
+    command: Commands;
+  };
+  type ContextMenu<Commands> = {
+    type: 'menu';
+    menu: Array<
+      | ContextMenuCommand<Commands>
+      | ContextMenuSeperator
+      | ContextMenu<Commands>
+    >;
+  };
+
+  interface DocumentEvents<
+    Commands extends string | number = keyof UnoCommands
+  > {
     document_size_changed: EventPayload<TwipsRect>;
     invalidate_visible_cursor: EventPayload<TwipsRect>;
     cursor_visible: EventPayload<boolean>;
     set_part: EventPayload<number>;
     ready: StateChangedValue[];
     state_changed: EventPayload<StateChangedValue>;
+    context_menu: EventPayload<ContextMenu<Commands>>;
+    clipboard_changed:
+      | null
+      | EventPayload<null>
+      | EventPayload<{ sw: true }>
+      | EventPayload<{ mimeType: string }>;
 
     // TODO: document these types
     hyperlink_clicked: any;
@@ -115,6 +156,7 @@ declare namespace LibreOffice {
   interface UnoCommands {
     '.uno:SetPageColor': { ColorHex: UnoString };
     '.uno:FontColor': { FontColor: UnoLong };
+    '.uno:Highlight': { BackColor: UnoLong };
   }
 
   type CommandValueResult<R = { [name: string]: any }> = {
@@ -123,6 +165,12 @@ declare namespace LibreOffice {
 
   interface GetCommands {
     '.uno:PageColor': string;
+    '.uno:TrackedChangeAuthors': {
+      authors: Array<{
+        index: number;
+        name: string;
+      }>;
+    };
   }
 
   interface DocumentClient<
@@ -165,42 +213,21 @@ declare namespace LibreOffice {
      * Sets the author of the document
      * @param author - the new authors name
      */
-    setAuthor(
-      author: string,
-    ): void;
+    setAuthor(author: string): void;
 
     /**
      * posts a UNO command to the document
      * @param command - the uno command to be posted
      * @param args - arguments for the uno command
+     * @param notifyWhenFinished - whether an UNO command result event should be sent for the result
      */
     postUnoCommand<K extends Commands>(
       command: K,
       args?: K extends keyof NonNullable<CommandMap>
         ? NonNullable<CommandMap>[K]
-        : never
+        : never,
+      notifyWhenFinished?: boolean
     ): void;
-
-    /**
-     * get the current parts name
-     * @param partId - the id of the part you are in
-     * @returns the parts name
-     */
-    getPartName(partId: number): string;
-
-    /**
-     * get the current parts hash
-     * @param partId - the id of the part you are in
-     * @returns the parts hash
-     */
-    getPartHash(partId: number): string;
-
-    /**
-     * posts a dialog event for the window with given id
-     * @param windowId - the id of the window to notify
-     * @param args - the arguments for the event
-     */
-    sendDialogEvent(windowId: number, args: { [name: string]: any }): void;
 
     /**
      * sets the start or end of a text selection
@@ -211,36 +238,17 @@ declare namespace LibreOffice {
     setTextSelection(type: number, x: number, y: number): void;
 
     /**
-     * gets the currently selected text
-     * @param mimeType - the mime type for the selection
-     * @returns result[0] is the text selection result[1] is the used mime type
-     */
-    getTextSelection(mimeType: string): string[];
-
-    /**
-     * gets the type of the selected content and possibly its text
-     * @param mimeType - the mime type of the selection
-     * @returns the selection type, the text of the selection and the used mime type
-     */
-    getSelectionTypeAndText(mimeType: string): {
-      selectionType: number;
-      text: string;
-      usedMimeType: string;
-    };
-
-    /**
-     * gets the content on the clipboard for the current view as a series of
-     * binary streams
-     * @param mimeTypes - the array of mimeTypes corresponding to each item in the clipboard
-     * the mimeTypes should include the charset if you are going to pass them in for filtering the clipboard data ex.) text/plain;charset=utf-8
+     * gets the content of the clipboard for the current view
+     * @param mimeTypes - desired MIME types from the clipboard
      * @returns an array of clipboard items
      */
-    getClipboard(mimeTypes?: string[]): Array<ClipboardItem | undefined>;
+    getClipboard(
+      mimeTypes?: Array<ClipboardItem['mimeType']>
+    ): Array<ClipboardItem | undefined>;
 
     /**
-     * populates the clipboard for this view with multiple types of content
+     * populates the clipboard for the current view with multiple types of content
      * @param clipboardData - array of clipboard items used to populate the clipboard
-     * for setting the clipboard data you will NOT want to include the charset in the mimeType. ex.) text/plain
      * @returns whether the operation was successful
      */
     setClipboard(clipboardData: ClipboardItem[]): boolean;
@@ -273,81 +281,51 @@ declare namespace LibreOffice {
      * @param command - the UNO command for which possible values are requested
      * @returns the command object with possible values
      */
-    getCommandValues<K extends keyof GCV = keyof GCV>(command: K): GCV[K];
+    getCommandValues<K extends keyof GCV = keyof GCV>(
+      command: K
+    ): Promise<GCV[K]>;
 
     /**
      * sets the cursor to a given outline node
      * @param id - the id of the node to go to
      * @returns the rect of the node where the cursor is brought to
      */
-    gotoOutline(id: number): {
-      destRect: string;
-    };
-
-    saveToMemory(): Promise<ArrayBuffer | undefined>;
-
-    /**
-     * show/hide a single row/column header outline for Calc documents
-     * @param column - if we are dealingg with a column or row group
-     * @param level - the level to which the group belongs
-     * @param index - the group entry index
-     * @param hidden - the new group state (collapsed/expanded)
-     */
-    setOutlineState(
-      column: boolean,
-      level: number,
-      index: number,
-      hidden: boolean
-    ): void;
+    gotoOutline(id: number):
+      | {
+          destRect: string;
+        }
+      | undefined;
 
     /**
-     * set the language tag of the window with the specified id
-     * @param id - a view ID
-     * @param language - Bcp47 languageTag, like en-US or so
+     * saves the document to memory
+     * @param [format] - the optional format the document saves to, when omitted docx is used
+     * @returns an array buffer with the bytes of the document or undefiend if saving failed
      */
-    setViewLanguage(id: number, language: string): void;
+    saveToMemory(format?: string): Promise<ArrayBuffer | undefined>;
 
     /**
-     * set a part's selection mode
-     * @param part - the part you want to select
-     * @param select - 0 to deselect, 1 to select, and 2 to toggle
+     * saves the document to memory
+     * Stores the document's persistent data to a URL and continues to be a representation of the old URL.
+     *
+     * @param url the location where to store the document
+     * @param [format] the format to use while exporting, when omitted, then deducted from the URL's file extension
+     * @param [filter] options for the export filter
+     * @returns true if the save succeeded, false otherwise
      */
-    selectPart(part: number, select: 0 | 1 | 2): void;
-
-    /**
-     * moves the selected pages/slides to a new position
-     * @param position - the new position where the selection should go
-     * @param duplicate - when true will copy instead of move
-     */
-    moveSelectedParts(position: number, duplicate: boolean): void;
-
-    /**
-     * for deleting many characters all at once
-     * @param windowId - the window id to post the input event to.
-     * If windowId is 0 the event is posted into the document
-     * @param before - the characters to be deleted before the cursor position
-     * @param after - the charactes to be deleted after teh cursor position
-     */
-    removeTextContext(windowId: number, before: number, after: number): void;
-
-    /**
-     * select the Calc function to be pasted into the formula input box
-     * @param functionName - the function name to be completed
-     */
-    completeFunction(functionName: string): void;
-
-    /**
-     * posts an event for the form field at the cursor position
-     * @param arguments - the arguments for the event
-     */
-    sendFormFieldEvent(arguments: string): void;
-
-    /**
-     * posts an event for the content control at the cursor position
-     * @param arguments - the arguments for the event
-     * @returns whether sending the event was successful
-     */
-    sendContentControlEvent(arguments: { [name: string]: any }): boolean;
+    saveAs(
+      url: string,
+      format?:
+        | 'doc'
+        | 'docm'
+        | 'docx'
+        | 'html'
+        | 'odt'
+        | 'ott'
+        | 'pdf'
+        | 'txt'
+        | 'png',
+      filter?: string
+    ): Promise<boolean>;
 
     /**
      * if the document is ready
@@ -355,56 +333,37 @@ declare namespace LibreOffice {
      */
     isReady(): boolean;
 
+    /**
+     * run immediately after loading a document for documents that will be rendered
+     */
+    initializeForRendering(): Promise<void>;
+
+    /**
+     * returns a new DocumentClient with a seperate LOK view
+     **/
+    newView(): DocumentClient<Events, Commands, CommandMap, GCV>;
+
     as: import('./lok_api').text.GenericTextDocument['as'];
   }
 
   interface OfficeClient {
     /**
-     * add an event listener
-     * @param eventName - the name of the event
-     * @param callback - the callback function
-     */
-    on(eventName: string, callback: () => void): void;
-
-    /**
-     * turn off an event listener
-     * @param eventName - the name of the event
-     * @param callback - the callback function
-     */
-    off(eventName: string, callback: () => void): void;
-
-    /**
-     * emit an event for an event listener
-     * @param eventName - the name of the event
-     * @param callback - the callback function
-     */
-    emit(eventName: string, callback: () => void): void;
-
-    /**
-     * returns details of filter types
-     * @returns the details of the filter types
-     */
-    getFilterTypes(): { [name: string]: { [name: string]: string } };
-
-    /**
      * set password required for loading or editing a document
      * @param url - the URL of the document, as sent to the callback
-     * @param password - the password, undefined indicates no password
+     * @param password - the password, null indicates no password
+     *
+     * In response to a `document_password` request event:
+     * - a valid password will continue loading the document
+     * - an invalid password will result in another 'document_password' request event,
+     * - a `null` password will abort loading the document.
+     *
+     * In response to `document_password_to_modify`:
+     * - a valid password will continue loading the document
+     * - an invalid password will result in another `document_password_to_modify` request
+     * - a `null` password will continue loading the document in read-only mode
      */
-    setDocumentPassword(url: string, password?: string): void;
-
-    /**
-     * get version information of the LOKit process
-     * @returns the version info in JSON format
-     */
-    getVersionInfo(): { [name: string]: any };
-
-    /**
-     * posts a dialog event for the window with given id
-     * @param windowId - the id of the window to notify
-     * @param args - the arguments for the event
-     */
-    sendDialogEvent(windowId: number, args: string): void;
+    // TODO: [MACRO-1899] fix setDocumentPassword in LOK, then re-enable
+    // setDocumentPassword(url: string, password: string | null): Promise<void>;
 
     /**
      * loads a given document
@@ -416,22 +375,13 @@ declare namespace LibreOffice {
     /**
      * loads a given document from an ArrayBuffer
      * @param buffer - the array buffer of the documents contents
-     * @returns a XTextDocument created from the ArrayBuffer
+     * @returns a DocumentClient created from the ArrayBuffer
      */
-    loadDocumentFromArrayBuffer(
+    loadDocumentFromArrayBuffer<C = DocumentClient>(
       buffer: ArrayBuffer
-    ): import('./lok_api').text.XTextDocument | undefined;
+    ): Promise<C | undefined>;
 
-    /**
-     * run a macro
-     * @param url - the url for the macro (macro:// URI format)
-     * @returns true if it succeeded, false if it failed
-     */
-    runMacro(url: string): boolean;
-
-    api: typeof import('./lok_api');
-
-    /** cleanup for window.beforeunload, do not call in any other circumstance */
-    _beforeunload(): void;
+    /** gets the last error thrown by LOK */
+    getLastError(): string;
   }
 }

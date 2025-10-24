@@ -8,6 +8,7 @@
 #include "base/check.h"
 #include "base/logging.h"
 #include "base/memory/aligned_memory.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "cc/paint/paint_canvas.h"
 #include "cc/paint/paint_image.h"
 #include "cc/paint/paint_image_builder.h"
@@ -28,7 +29,11 @@
 // #define TILEBUFFER_DEBUG_PAINT
 
 namespace electron::office {
-TileBuffer::TileBuffer() : valid_tile_(0), active_context_hash_(0) {
+TileBuffer::TileBuffer()
+    : base::RefCountedDeleteOnSequence<TileBuffer>(
+          base::SequencedTaskRunnerHandle::Get()),
+      valid_tile_(0),
+      active_context_hash_(0) {
   pool_buffer_ =
       std::shared_ptr<uint8_t[]>(static_cast<uint8_t*>(base::AlignedAlloc(
                                      kPoolAllocatedSize, kPoolAligned)),
@@ -42,16 +47,22 @@ Snapshot::Snapshot(std::vector<cc::PaintImage> tiles_,
                    int column_start_,
                    int column_end_,
                    int row_start_,
-                   int row_end_)
+                   int row_end_,
+                   int scroll_y_position)
     : tiles(std::move(tiles_)),
       scale(scale_),
       column_start(column_start_),
       column_end(column_end_),
       row_start(row_start_),
-      row_end(row_end_) {}
+      row_end(row_end_),
+      scroll_y_position(scroll_y_position) {}
 
 Snapshot::Snapshot() = default;
 Snapshot::~Snapshot() = default;
+Snapshot::Snapshot(const Snapshot& other) = default;
+Snapshot& Snapshot::operator=(const Snapshot& other) = default;
+Snapshot& Snapshot::operator=(Snapshot&& other) noexcept = default;
+Snapshot::Snapshot(Snapshot&& other) noexcept = default;
 
 TileBuffer::~TileBuffer() = default;
 
@@ -87,7 +98,7 @@ void TileBuffer::ResetScale(float scale) {
 }
 
 bool TileBuffer::PaintTile(CancelFlagPtr cancel_flag,
-                           lok::Document* document,
+                           DocumentHolderWithView document,
                            unsigned int tile_index,
                            std::size_t context_hash) {
   static const SkImageInfo image_info_ = SkImageInfo::Make(
@@ -218,8 +229,8 @@ std::vector<TileRange> TileBuffer::InvalidRangesRemaining(
 
 TileBuffer::RowLimit TileBuffer::LimitRange(int y_pos,
                                             unsigned int view_height) {
-  unsigned int start_row = std::max(
-      std::floor((double)y_pos / (double)TileBuffer::kTileSizePx), 0.0);
+  unsigned int start_row = y_pos < 0 ? 0 :
+      std::floor((double)y_pos / (double)TileBuffer::kTileSizePx);
   unsigned int end_row = start_row + std::ceil((double)view_height /
                                                (double)TileBuffer::kTileSizePx);
   return {start_row, std::max(start_row, end_row)};
@@ -252,7 +263,8 @@ std::vector<TileRange> TileBuffer::ClipRanges(std::vector<TileRange> ranges,
 
 TileRange TileBuffer::NextScrollTileRange(int next_y_pos,
                                           unsigned int view_height) {
-  auto row_limit = LimitRange(next_y_pos - view_height, view_height * 3);
+  next_y_pos = std::max(0, next_y_pos - (int)view_height);
+  auto row_limit = LimitRange(next_y_pos, view_height * 3);
   unsigned int start_row = row_limit.start > 0 ? row_limit.start : 0;
   unsigned int end_row = row_limit.end;
 
@@ -514,8 +526,12 @@ size_t TileCount(std::vector<TileRange> tile_ranges_) {
   return result;
 }
 
-const Snapshot TileBuffer::MakeSnapshot(CancelFlagPtr cancel_flag,
-                                        const gfx::Rect& rect) {
+bool TileBuffer::IsEmpty() {
+  return rows_ == 0 || columns_ == 0;
+}
+
+Snapshot TileBuffer::MakeSnapshot(CancelFlagPtr cancel_flag,
+                                  const gfx::Rect& rect) {
   std::vector<cc::PaintImage> tiles;
 
   auto offset_rect = gfx::RectF(rect);
@@ -550,7 +566,7 @@ const Snapshot TileBuffer::MakeSnapshot(CancelFlagPtr cancel_flag,
   }
 
   return Snapshot(std::move(tiles), scale_, column_start, column_end, row_start,
-                  row_end);
+                  row_end, y_pos_);
 }
 
 }  // namespace electron::office

@@ -4,8 +4,7 @@
 
 #include "office/office_web_plugin.h"
 
-#include <chrono>
-#include <memory>
+#include <algorithm>
 #include <string_view>
 
 #include "LibreOfficeKit/LibreOfficeKit.hxx"
@@ -14,18 +13,11 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
-#include "base/notreached.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/no_destructor.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/task/thread_pool.h"
-#include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "cc/paint/paint_canvas.h"
-#include "cc/paint/paint_flags.h"
-#include "cc/paint/paint_image.h"
-#include "cc/paint/paint_image_builder.h"
-#include "components/plugins/renderer/plugin_placeholder.h"
 #include "content/public/renderer/render_frame.h"
 #include "gin/arguments.h"
 #include "gin/converter.h"
@@ -33,46 +25,33 @@
 #include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "include/core/SkColor.h"
-#include "include/core/SkFontStyle.h"
-#include "include/core/SkTextBlob.h"
 #include "office/cancellation_flag.h"
 #include "office/document_client.h"
-#include "office/event_bus.h"
 #include "office/lok_callback.h"
 #include "office/lok_tilebuffer.h"
 #include "office/office_client.h"
+#include "office/office_instance.h"
 #include "office/office_keys.h"
 #include "office/paint_manager.h"
 #include "shell/common/gin_converters/gfx_converter.h"
-#include "shell/common/gin_helper/dictionary.h"
-#include "shell/common/gin_helper/function_template_extensions.h"
 #include "third_party/blink/public/common/input/web_coalesced_input_event.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
-#include "third_party/blink/public/common/input/web_mouse_event.h"
-#include "third_party/blink/public/common/input/web_pointer_properties.h"
-#include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_input_event_result.h"
-#include "third_party/blink/public/web/web_frame_widget.h"
 #include "third_party/blink/public/web/web_plugin_params.h"
 #include "third_party/blink/public/web/web_widget.h"
-#include "ui/base/clipboard/clipboard.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
-#include "ui/base/cursor/platform_cursor.h"
 #include "ui/events/blink/blink_event_util.h"
-#include "ui/gfx/geometry/point3_f.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/geometry/size_conversions.h"
-#include "ui/gfx/geometry/size_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
-#include "ui/gfx/native_widget_types.h"
 #include "v8/include/v8-isolate.h"
 #include "v8/include/v8-local-handle.h"
 #include "v8/include/v8-object.h"
+#include "web_plugin_utils.h"
 
 namespace electron {
 
@@ -86,31 +65,54 @@ blink::WebPlugin* CreateInternalPlugin(blink::WebPluginParams params,
 
 }  // namespace office
 
-OfficeWebPlugin::OfficeWebPlugin(blink::WebPluginParams params,
+using namespace office;
+OfficeWebPlugin::OfficeWebPlugin(blink::WebPluginParams /*params*/,
                                  content::RenderFrame* render_frame)
     : render_frame_(render_frame),
-      page_rects_cached_(),
+      tile_buffer_(base::MakeRefCounted<TileBuffer>()),
+      restore_key_(base::Token::CreateRandom()),
       task_runner_(render_frame->GetTaskRunner(
           blink::TaskType::kInternalMediaRealTime)) {
-  tile_buffer_ = std::make_unique<office::TileBuffer>();
   paint_manager_ = std::make_unique<office::PaintManager>(this);
-};
+  auto* inst = office::OfficeInstance::Get();
+  if (inst)
+    inst->AddDestroyedObserver(this);
+}
 
-// blink::WebPlugin {
 bool OfficeWebPlugin::Initialize(blink::WebPluginContainer* container) {
   container_ = container;
-  // This prevents the wheel event hit test data from causing a crash, wheel
-  // events are handled by the scroll container anyway
-  container->SetWantsWheelEvents(false);
-
-  // TODO: figure out what false means?
-  return true;
+  return container::Initialize(container);
 }
 
 void OfficeWebPlugin::Destroy() {
-  // TODO: handle destruction in the case where an embed is destroyed but a
-  // document is still mounted to it
+  paint_manager_->OnDestroy();
+  if (document_client_.MaybeValid()) {
+    document_client_->Unmount();
+    document_client_->MarkRendererWillRemount(
+        std::move(restore_key_),
+        {std::move(tile_buffer_), std::move(paint_manager_),
+         std::move(snapshot_), std::move(page_rects_cached_), first_intersect_,
+         last_intersect_, std::move(last_cursor_rect_), zoom_});
+  }
+  if (!doomed_) {
+    auto* inst = office::OfficeInstance::Get();
+    if (inst)
+      inst->RemoveDestroyedObserver(this);
+  }
+  if (document_) {
+    document_.RemoveDocumentObservers(this);
+  }
+
   delete this;
+}
+
+// the office client was destroyed, explicitly remove the hold on the document
+void OfficeWebPlugin::OnDestroyed() {
+  doomed_ = true;
+  auto* inst = office::OfficeInstance::Get();
+  if (inst)
+    inst->RemoveDestroyedObserver(this);
+  document_ = {};
 }
 
 v8::Local<v8::Object> OfficeWebPlugin::V8ScriptableObject(
@@ -128,6 +130,9 @@ v8::Local<v8::Object> OfficeWebPlugin::V8ScriptableObject(
                                                       base::Unretained(this)))
             .SetMethod("setZoom", base::BindRepeating(&OfficeWebPlugin::SetZoom,
                                                       base::Unretained(this)))
+            .SetMethod("invalidateAllTiles",
+                       base::BindRepeating(&OfficeWebPlugin::InvalidateAllTiles,
+                                           base::Unretained(this)))
             .SetMethod("twipToPx",
                        base::BindRepeating(&OfficeWebPlugin::TwipToCSSPx,
                                            base::Unretained(this)))
@@ -172,8 +177,9 @@ void OfficeWebPlugin::UpdateSnapshot(const office::Snapshot snapshot) {
 
 void OfficeWebPlugin::Paint(cc::PaintCanvas* canvas, const gfx::Rect& rect) {
   base::AutoReset<bool> auto_reset_in_paint(&in_paint_, true);
-  if (!visible_)
+  if (!visible_) {
     return;
+  }
 
   SkRect invalidate_rect =
       gfx::RectToSkRect(gfx::IntersectRects(css_plugin_rect_, rect));
@@ -185,13 +191,12 @@ void OfficeWebPlugin::Paint(cc::PaintCanvas* canvas, const gfx::Rect& rect) {
   canvas->clipRect(invalidate_rect);
 
   // not mounted
-  if (!document_client_)
+  if (!document_) {
     return;
+  }
 
   if (!plugin_rect_.origin().IsOrigin())
     canvas->translate(plugin_rect_.x(), plugin_rect_.y());
-
-  document_->setView(view_id_);
 
   gfx::Rect size(invalidate_rect.width(), invalidate_rect.height());
   std::vector<office::TileRange> missing =
@@ -202,7 +207,8 @@ void OfficeWebPlugin::Paint(cc::PaintCanvas* canvas, const gfx::Rect& rect) {
     UpdateSnapshot(tile_buffer_->MakeSnapshot(paint_cancel_flag_, size));
     take_snapshot_ = false;
   }
-  if (update_debounce_timer_ && !scrolling_) paint_manager_->PausePaint();
+  if (update_debounce_timer_ && !scrolling_)
+    paint_manager_->PausePaint();
 
   // the temporary scale is painted, now
   if (scale_pending_) {
@@ -211,7 +217,9 @@ void OfficeWebPlugin::Paint(cc::PaintCanvas* canvas, const gfx::Rect& rect) {
     ScheduleAvailableAreaPaint();
     first_paint_ = false;
   } else {
-    paint_manager_->ScheduleNextPaint(missing);
+    if (!paint_manager_->ScheduleNextPaint(missing) && missing.size() != 0) {
+      ScheduleAvailableAreaPaint();
+    }
     first_paint_ = false;
   }
   scrolling_ = false;
@@ -225,40 +233,31 @@ void OfficeWebPlugin::UpdateGeometry(const gfx::Rect& window_rect,
   if (window_rect.IsEmpty())
     return;
 
-  // get the document root frame's scale factor so that any widget scaling does
-  // not affect the device scale
-  blink::WebWidget* widget =
-      container_->GetDocument().GetFrame()->LocalRoot()->FrameWidget();
-  OnViewportChanged(window_rect,
-                    widget->GetOriginalScreenInfo().device_scale_factor);
+  OnViewportChanged(window_rect, container::DeviceScale(container_));
 }
 
 void OfficeWebPlugin::UpdateFocus(bool focused,
                                   blink::mojom::FocusType focus_type) {
+  if (disable_input_)
+    return;
   // focusing without cursor interaction doesn't register with LOK, so for JS to
   // register a .focus() on the embed, simply simulate a click at the last
   // cursor position
-  if (view_id_ != -1 && document_ != nullptr && focused &&
-      focus_type == blink::mojom::FocusType::kScript) {
-    if (last_cursor_.empty())
+  if (document_ && focused && focus_type == blink::mojom::FocusType::kScript) {
+    if (last_cursor_rect_.empty())
       return;
 
-    std::string_view payload_sv(last_cursor_);
+    std::string_view payload_sv(last_cursor_rect_);
     std::string_view::const_iterator start = payload_sv.begin();
     gfx::Rect pos = office::lok_callback::ParseRect(start, payload_sv.end());
-    task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&lok::Document::setView,
-                                  base::Unretained(document_), view_id_));
-    task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&lok::Document::postMouseEvent,
-                                  base::Unretained(document_),
-                                  LOK_MOUSEEVENT_MOUSEBUTTONDOWN, pos.x(),
-                                  pos.y(), 1, 1, 0));
-    task_runner_->PostTask(FROM_HERE,
-                           base::BindOnce(&lok::Document::postMouseEvent,
-                                          base::Unretained(document_),
-                                          LOK_MOUSEEVENT_MOUSEBUTTONUP, pos.x(),
-                                          pos.y(), 1, 1, 0));
+    document_.Post(base::BindOnce(
+        [](gfx::Rect pos, DocumentHolderWithView holder) {
+          holder->postMouseEvent(LOK_MOUSEEVENT_MOUSEBUTTONDOWN, pos.x(),
+                                 pos.y(), 1, 1, 0);
+          holder->postMouseEvent(LOK_MOUSEEVENT_MOUSEBUTTONUP, pos.x(), pos.y(),
+                                 1, 1, 0);
+        },
+        std::move(pos)));
   }
 
   has_focus_ = focused;
@@ -268,30 +267,78 @@ void OfficeWebPlugin::UpdateVisibility(bool visibility) {
   visible_ = visibility;
 }
 
+namespace {
+// this is kind of stupid, since there's probably a way to get this directly
+// from blink, but it works
+ui::mojom::CursorType cssCursorToMojom(const std::string& css) {
+  using ui::mojom::CursorType;
+  static const base::NoDestructor<std::unordered_map<std::string, CursorType>>
+      map({{"auto", CursorType::kNull},
+           {"default", CursorType::kNull},
+           {"none", CursorType::kNone},
+           {"context-menu", CursorType::kContextMenu},
+           {"help", CursorType::kHelp},
+           {"pointer", CursorType::kPointer},
+           {"progress", CursorType::kProgress},
+           {"wait", CursorType::kWait},
+           {"cell", CursorType::kCell},
+           {"crosshair", CursorType::kCross},
+           {"text", CursorType::kIBeam},
+           {"vertical-text", CursorType::kVerticalText},
+           {"alias", CursorType::kAlias},
+           {"copy", CursorType::kCopy},
+           {"move", CursorType::kMove},
+           {"no-drop", CursorType::kNoDrop},
+           {"not-allowed", CursorType::kNotAllowed},
+           {"grab", CursorType::kGrab},
+           {"grabbing", CursorType::kGrabbing},
+           {"e-resize", CursorType::kEastResize},
+           {"n-resize", CursorType::kNorthResize},
+           {"ne-resize", CursorType::kNorthEastResize},
+           {"nw-resize", CursorType::kNorthWestResize},
+           {"s-resize", CursorType::kSouthResize},
+           {"se-resize", CursorType::kSouthEastResize},
+           {"sw-resize", CursorType::kSouthWestResize},
+           {"w-resize", CursorType::kWestResize},
+           {"ew-resize", CursorType::kEastWestResize},
+           {"ns-resize", CursorType::kNorthSouthResize},
+           {"nesw-resize", CursorType::kNorthEastSouthWestResize},
+           {"nwse-resize", CursorType::kNorthWestSouthEastResize},
+           {"col-resize", CursorType::kColumnResize},
+           {"row-resize", CursorType::kRowResize},
+           {"all-scroll", CursorType::kMove},
+           {"zoom-in", CursorType::kZoomIn},
+           {"zoom-out", CursorType::kZoomOut}});
+  auto it = map->find(css);
+  return it == map->end() ? CursorType::kNull : it->second;
+}
+}  // namespace
+
 blink::WebInputEventResult OfficeWebPlugin::HandleInputEvent(
     const blink::WebCoalescedInputEvent& event,
     ui::Cursor* cursor) {
+  base::TimeTicks now = base::TimeTicks::Now();
+  // we debounce this because getting the computed value calculates layout and
+  // the cursor is often the same
+  if (last_css_cursor_time_.is_null() ||
+      (now - last_css_cursor_time_) > base::Milliseconds(10)) {
+    last_css_cursor_time_ = now;
+    cursor_type_ = cssCursorToMojom(container::CSSCursor(container_));
+  }
+  *cursor = cursor_type_;
+  if (disable_input_)
+    return blink::WebInputEventResult::kNotHandled;
+
   blink::WebInputEvent::Type event_type = event.Event().GetType();
 
   // TODO: handle gestures
   if (blink::WebInputEvent::IsGestureEventType(event_type))
     return blink::WebInputEventResult::kNotHandled;
 
-  if (container_ && container_->WasTargetForLastMouseEvent()) {
-    *cursor = cursor_type_;
-  }
-
   if (blink::WebInputEvent::IsKeyboardEventType(event_type))
     return HandleKeyEvent(
         std::move(static_cast<const blink::WebKeyboardEvent&>(event.Event())),
         cursor);
-
-  std::unique_ptr<blink::WebInputEvent> transformed_event =
-      ui::TranslateAndScaleWebInputEvent(
-          event.Event(), gfx::Vector2dF(-available_area_.x(), 0), 1.0);
-
-  const blink::WebInputEvent& event_to_handle =
-      transformed_event ? *transformed_event : event.Event();
 
   switch (event_type) {
     case blink::WebInputEvent::Type::kMouseDown:
@@ -302,12 +349,13 @@ blink::WebInputEventResult OfficeWebPlugin::HandleInputEvent(
       return blink::WebInputEventResult::kNotHandled;
   }
 
-  blink::WebMouseEvent mouse_event =
-      static_cast<const blink::WebMouseEvent&>(event_to_handle);
+  int modifiers = event.Event().GetModifiers();
 
-  int modifiers = mouse_event.GetModifiers();
-  return HandleMouseEvent(event_type, mouse_event.PositionInWidget(), modifiers,
-                          mouse_event.ClickCount(), cursor)
+  return HandleMouseEvent(
+             event_type,
+             input::GetRelativeMousePosition(
+                 event.Event(), gfx::Vector2dF(-available_area_.x(), 0)),
+             modifiers, input::GetClickCount(event.Event()), cursor)
              ? blink::WebInputEventResult::kHandledApplication
              : blink::WebInputEventResult::kNotHandled;
 }
@@ -315,8 +363,9 @@ blink::WebInputEventResult OfficeWebPlugin::HandleInputEvent(
 blink::WebInputEventResult OfficeWebPlugin::HandleKeyEvent(
     const blink::WebKeyboardEvent event,
     ui::Cursor* cursor) {
-  if (!document_ || view_id_ == -1)
+  if (!document_) {
     return blink::WebInputEventResult::kNotHandled;
+  }
 
   blink::WebInputEvent::Type type = event.GetType();
 
@@ -347,18 +396,9 @@ blink::WebInputEventResult OfficeWebPlugin::HandleKeyEvent(
       // don't close the internal LO window
       case office::DomCode::US_W:
         return blink::WebInputEventResult::kNotHandled;
-      case office::DomCode::US_C:
-        return type == blink::WebInputEvent::Type::kRawKeyDown
-                   ? blink::WebInputEventResult::kHandledApplication
-                   : HandleCutCopyEvent(".uno:Copy");
+      // prevent paste, paste unformatted (handle the events in JS instead)
       case office::DomCode::US_V:
-        return type == blink::WebInputEvent::Type::kKeyUp
-                   ? blink::WebInputEventResult::kHandledApplication
-                   : HandlePasteEvent();
-      case office::DomCode::US_X:
-        return type == blink::WebInputEvent::Type::kKeyUp
-                   ? blink::WebInputEventResult::kHandledApplication
-                   : HandleCutCopyEvent(".uno:Cut");
+        return blink::WebInputEventResult::kNotHandled;
     }
   }
 
@@ -374,48 +414,14 @@ blink::WebInputEventResult OfficeWebPlugin::HandleKeyEvent(
 
   int lok_key_code = office::DOMKeyCodeToLOKKeyCode(event.dom_code, modifiers);
 
-  task_runner_->PostTask(FROM_HERE,
-                         base::BindOnce(&lok::Document::setView,
-                                        base::Unretained(document_), view_id_));
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&lok::Document::postKeyEvent, base::Unretained(document_),
-                     type == blink::WebInputEvent::Type::kKeyUp
-                         ? LOK_KEYEVENT_KEYUP
-                         : LOK_KEYEVENT_KEYINPUT,
-                     event.text[0], lok_key_code));
-
-  return blink::WebInputEventResult::kHandledApplication;
-}
-
-blink::WebInputEventResult OfficeWebPlugin::HandleCutCopyEvent(
-    std::string event) {
-  document_client_->PostUnoCommandInternal(event, nullptr, true);
-  return blink::WebInputEventResult::kHandledApplication;
-}
-
-blink::WebInputEventResult OfficeWebPlugin::HandlePasteEvent() {
-  ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
-  std::vector<std::u16string> res =
-      clipboard->ReadAvailableStandardAndCustomFormatNames(
-          ui::ClipboardBuffer::kCopyPaste, nullptr);
-
-  std::string clipboard_type = "";
-
-  for (std::u16string r : res) {
-    if (r == u"text/plain") {
-      clipboard_type = "text/plain;charset=utf-8";
-      break;
-    } else if (r == u"image/png") {
-      clipboard_type = "image/png";
-      break;
-    }
-  }
-
-  if (!document_client_->OnPasteEvent(clipboard, clipboard_type)) {
-    LOG(ERROR) << "Failed to set lok clipboard";
-    return blink::WebInputEventResult::kNotHandled;
-  }
+  document_.Post(base::BindOnce(
+      [](LibreOfficeKitKeyEventType key_event, char16_t text, int lok_key_code,
+         DocumentHolderWithView holder) {
+        holder->postKeyEvent(key_event, text, lok_key_code);
+      },
+      type == blink::WebInputEvent::Type::kKeyUp ? LOK_KEYEVENT_KEYUP
+                                                 : LOK_KEYEVENT_KEYINPUT,
+      event.text[0], lok_key_code));
 
   return blink::WebInputEventResult::kHandledApplication;
 }
@@ -425,7 +431,7 @@ bool OfficeWebPlugin::HandleMouseEvent(blink::WebInputEvent::Type type,
                                        int modifiers,
                                        int clickCount,
                                        ui::Cursor* cursor) {
-  if (!document_ || view_id_ == -1)
+  if (!document_)
     return false;
 
   LibreOfficeKitMouseEventType event_type;
@@ -463,15 +469,15 @@ bool OfficeWebPlugin::HandleMouseEvent(blink::WebInputEvent::Type type,
     buttons |= 4;
 
   if (buttons > 0) {
-    task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&lok::Document::setView,
-                                  base::Unretained(document_), view_id_));
-    task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&lok::Document::postMouseEvent,
-                       base::Unretained(document_), event_type, pos.x(),
-                       pos.y(), clickCount, buttons,
-                       office::EventModifiersToLOKModifiers(modifiers)));
+    document_.Post(base::BindOnce(
+        [](LibreOfficeKitMouseEventType event_type, gfx::Point pos,
+           int clickCount, int buttons, int modifiers,
+           DocumentHolderWithView holder) {
+          holder->postMouseEvent(event_type, pos.x(), pos.y(), clickCount,
+                                 buttons, modifiers);
+        },
+        event_type, std::move(pos), clickCount, buttons,
+        office::EventModifiersToLOKModifiers(modifiers)));
     return true;
   }
 
@@ -495,11 +501,11 @@ bool OfficeWebPlugin::HasEditableText() const {
 }
 
 bool OfficeWebPlugin::CanUndo() const {
-  return document_client_ && document_client_->CanUndo();
+  return document_client_.MaybeValid() && document_client_->CanUndo();
 }
 
 bool OfficeWebPlugin::CanRedo() const {
-  return document_client_ && document_client_->CanRedo();
+  return document_client_.MaybeValid() && document_client_->CanRedo();
 }
 
 content::RenderFrame* OfficeWebPlugin::render_frame() const {
@@ -510,7 +516,7 @@ OfficeWebPlugin::~OfficeWebPlugin() = default;
 
 void OfficeWebPlugin::InvalidateWeakContainer() {
   if (!in_paint_) {
-    container_->Invalidate();
+    container::Invalidate(container_);
   }
 }
 
@@ -524,7 +530,7 @@ void OfficeWebPlugin::InvalidatePluginContainer() {
 
 void OfficeWebPlugin::OnGeometryChanged(double old_zoom,
                                         float old_device_scale) {
-  if (!document_client_)
+  if (!document_)
     return;
 
   if (viewport_zoom_ != old_zoom || device_scale_ != old_device_scale) {
@@ -550,7 +556,7 @@ void OfficeWebPlugin::OnGeometryChanged(double old_zoom,
 std::vector<gfx::Rect> OfficeWebPlugin::PageRects() {
   std::vector<gfx::Rect> result;
 
-  if (!document_client_)
+  if (!document_ || !document_client_.MaybeValid())
     return result;
   auto page_rects_ = document_client_->PageRects();
 
@@ -564,12 +570,27 @@ std::vector<gfx::Rect> OfficeWebPlugin::PageRects() {
   return result;
 }
 
+void OfficeWebPlugin::InvalidateAllTiles() {
+  // not mounted
+  if (!document_)
+    return;
+
+  if (!tile_buffer_)
+    return;
+
+  tile_buffer_->InvalidateAllTiles();
+}
+
 gfx::Size OfficeWebPlugin::GetDocumentPixelSize() {
+  if (!document_client_.MaybeValid())
+    return {};
   auto size = document_client_->DocumentSizeTwips();
   return gfx::Size(ceil(TwipToPx(size.width())), ceil(TwipToPx(size.height())));
 }
 
 gfx::Size OfficeWebPlugin::GetDocumentCSSPixelSize() {
+  if (!document_client_.MaybeValid())
+    return {};
   auto size = document_client_->DocumentSizeTwips();
   return gfx::Size(
       ceil(office::lok_callback::TwipToPixel(size.width(), zoom_)),
@@ -597,7 +618,7 @@ void OfficeWebPlugin::OnViewportChanged(
 
   OnGeometryChanged(viewport_zoom_, old_device_scale);
 
-  if (!document_client_)
+  if (!document_)
     return;
 
   if (need_fresh_paint) {
@@ -607,8 +628,9 @@ void OfficeWebPlugin::OnViewportChanged(
 
 void OfficeWebPlugin::HandleInvalidateTiles(std::string payload) {
   // not mounted
-  if (view_id_ == -1)
+  if (!document_) {
     return;
+  }
 
   std::string_view payload_sv(payload);
 
@@ -630,10 +652,9 @@ void OfficeWebPlugin::HandleInvalidateTiles(std::string payload) {
     base::TimeTicks now = base::TimeTicks::Now();
     if (last_full_invalidation_time_.is_null() ||
         (now - last_full_invalidation_time_) > base::Milliseconds(10)) {
-
       task_runner_->PostTask(
-          FROM_HERE, base::BindOnce(&OfficeWebPlugin::TryResumePaint,
-                                    GetWeakPtr()));
+          FROM_HERE,
+          base::BindOnce(&OfficeWebPlugin::TryResumePaint, GetWeakPtr()));
 
       ScheduleAvailableAreaPaint();
       last_full_invalidation_time_ = now;
@@ -651,7 +672,7 @@ void OfficeWebPlugin::HandleInvalidateTiles(std::string payload) {
       return;
 
     gfx::RectF offset_area(available_area_);
-    offset_area.Offset(0, scroll_y_position_ * device_scale_);
+    offset_area.Offset(0, scroll_y_position_);
     auto view_height = offset_area.height();
     auto range = tile_buffer_->InvalidateTilesInTwipRect(dirty_rect);
     auto limit = tile_buffer_->LimitIndex(scroll_y_position_, view_height);
@@ -664,8 +685,8 @@ void OfficeWebPlugin::HandleInvalidateTiles(std::string payload) {
     range.index_end = std::min(range.index_end, limit.index_end);
 
     task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&OfficeWebPlugin::TryResumePaint,
-                                  GetWeakPtr()));
+        FROM_HERE,
+        base::BindOnce(&OfficeWebPlugin::TryResumePaint, GetWeakPtr()));
 
     take_snapshot_ = true;
     paint_manager_->SchedulePaint(document_, scroll_y_position_, view_height,
@@ -673,25 +694,29 @@ void OfficeWebPlugin::HandleInvalidateTiles(std::string payload) {
   }
 }
 
-void OfficeWebPlugin::HandleDocumentSizeChanged(std::string payload) {
-  if (!document_)
-    return;
-  long width, height;
-  document_->getDocumentSize(&width, &height);
-  tile_buffer_->Resize(width, height);
-}
-
-void OfficeWebPlugin::HandleCursorInvalidated(std::string payload) {
-  if (!payload.empty()) {
-    last_cursor_ = std::move(payload);
-  }
-}
-
 float OfficeWebPlugin::TotalScale() {
   return zoom_ * device_scale_ * viewport_zoom_;
 }
 
+namespace {
+// clip to nearest 8px (Alex discovered this was the crispest render)
+float clipToNearest8PxZoom(int w, float s) {
+  float scaled_width = static_cast<float>(w) * s;
+  int mod = static_cast<int>(std::ceil(scaled_width)) % 8;
+  if (mod == 0)
+    return s;
+
+  float low_scale = (std::ceil(scaled_width) - mod) / w;
+  float high_scale = (std::ceil(scaled_width) + 8 - mod) / w;
+
+  return std::abs(low_scale - s) < std::abs(high_scale - s) ? low_scale
+                                                            : high_scale;
+}
+}  // namespace
+
 void OfficeWebPlugin::SetZoom(float zoom) {
+  zoom = clipToNearest8PxZoom(256, zoom);
+
   if (abs(zoom_ - zoom) < 0.0001f) {
     return;
   }
@@ -700,7 +725,7 @@ void OfficeWebPlugin::SetZoom(float zoom) {
   scroll_y_position_ = zoom / zoom_ * scroll_y_position_;
   zoom_ = zoom;
 
-  if (!document_client_ || view_id_ == -1)
+  if (!document_)
     return;
   scale_pending_ = true;
 
@@ -747,9 +772,13 @@ void OfficeWebPlugin::UpdateIntersectingPages() {
   }
 }
 
-void OfficeWebPlugin::UpdateScroll(int y_position) {
-  if (!document_client_ || stop_scrolling_)
+void OfficeWebPlugin::UpdateScroll(int64_t y_position) {
+  if (!document_ || !document_client_.MaybeValid() || stop_scrolling_)
     return;
+  if (!tile_buffer_ || tile_buffer_->IsEmpty()) {
+    LOG(ERROR) << "Tile buffer is empty during scroll";
+    return;
+  }
 
   float view_height =
       plugin_rect_.height() / device_scale_ / (float)viewport_zoom_;
@@ -757,7 +786,7 @@ void OfficeWebPlugin::UpdateScroll(int y_position) {
       TwipToPx(document_client_->DocumentSizeTwips().height()) - view_height,
       0.0f);
 
-  float scaled_y = base::clamp((float)y_position, 0.0f, max_y) * device_scale_;
+  float scaled_y = std::clamp((float)y_position, 0.0f, max_y) * device_scale_;
   scroll_y_position_ = scaled_y;
 
   // TODO: paint PRIOR not ahead for scroll up
@@ -774,92 +803,142 @@ void OfficeWebPlugin::UpdateScroll(int y_position) {
   take_snapshot_ = true;
 }
 
-bool OfficeWebPlugin::RenderDocument(
+std::string OfficeWebPlugin::RenderDocument(
     v8::Isolate* isolate,
-    gin::Handle<office::DocumentClient> client) {
+    gin::Handle<office::DocumentClient> client,
+    gin::Arguments* args) {
   if (client.IsEmpty()) {
     LOG(ERROR) << "invalid document client";
-    return false;
+    return {};
   }
-  base::WeakPtr<office::OfficeClient> office = client->GetOfficeClient();
-  if (!office) {
-    LOG(ERROR) << "invalid office client";
-    return false;
+  absl::optional<base::Token> maybe_restore_key;
+
+  v8::Local<v8::Object> options;
+  if (args->GetNext(&options)) {
+    gin::Dictionary options_dict(isolate, options);
+
+    float zoom;
+    if (options_dict.Get("zoom", &zoom)) {
+      zoom_ = clipToNearest8PxZoom(256, zoom);
+    }
+
+    bool disable_input;
+    if (options_dict.Get("disableInput", &disable_input)) {
+      disable_input_ = disable_input;
+    }
+
+    std::string restore_key;
+    if (options_dict.Get("restoreKey", &restore_key)) {
+      maybe_restore_key = base::Token::FromString(restore_key);
+    }
   }
 
-  // TODO: honestly, this is terrible, need to do this properly
-  // already mounted
-  bool needs_reset = view_id_ != -1 && document_ != client->GetDocument() &&
-                     document_ != nullptr;
-  if (needs_reset) {
-    office->CloseDocument(document_client_->Path());
-    document_client_->Unmount();
-    document_ = nullptr;
-    document_client_ = nullptr;
+  bool needs_reset = document_ && document_ != client->GetDocument();
+
+  if (registered_observers_ && document_) {
+    document_.RemoveDocumentObservers(this);
   }
+  if (needs_reset && document_client_.MaybeValid()) {
+    document_client_->Unmount();
+  }
+  bool needs_restore = !document_ && maybe_restore_key.has_value();
 
   document_ = client->GetDocument();
-  if (!document_)
-    return false;
+  document_client_ = client->GetWeakPtr();
+
+  if (!document_) {
+    LOG(ERROR) << "document not held in client";
+    return {};
+  }
 
   if (needs_reset) {
+    first_paint_ = true;
     tile_buffer_->InvalidateAllTiles();
   }
 
-  document_client_ = client.get();
-  rendered_client_.Reset(
-      isolate, document_client_->GetWrapper(isolate).ToLocalChecked());
-  view_id_ = client->Mount(isolate);
-  auto size = document_client_->DocumentSizeTwips();
-  scroll_y_position_ = 0;
-  tile_buffer_->SetYPosition(0);
-  tile_buffer_->Resize(size.width(), size.height(), TotalScale());
+  if (needs_restore) {
+    auto transferable = client->GetRestoredRenderer(maybe_restore_key.value());
+    if (transferable.tile_buffer && !transferable.tile_buffer->IsEmpty()) {
+      tile_buffer_ = std::move(transferable.tile_buffer);
+    }
+    snapshot_ = std::move(transferable.snapshot);
+    if (transferable.paint_manager) {
+      paint_manager_ = std::make_unique<office::PaintManager>(
+          this, std::move(transferable.paint_manager));
+    }
+    first_paint_ = false;
+    page_rects_cached_ = std::move(transferable.page_rects);
+    first_intersect_ = transferable.first_intersect;
+    last_intersect_ = transferable.last_intersect;
+    last_cursor_rect_ = std::move(transferable.last_cursor_rect);
+    if (transferable.zoom > 0) {
+      zoom_ = transferable.zoom;
+    }
+  }
+
+  client->Mount(isolate);
+  if (needs_restore) {
+    scroll_y_position_ = snapshot_.scroll_y_position;
+  } else {
+    auto size = document_client_->DocumentSizeTwips();
+    scroll_y_position_ = 0;
+    // TODO: figure out why zoom_ can sometimes be set to NaN
+    if (zoom_ != zoom_ || zoom_ < 0) {
+      zoom_ = 1.0f;
+    }
+    tile_buffer_->SetYPosition(0);
+    tile_buffer_->Resize(size.width(), size.height(), TotalScale());
+  }
 
   if (needs_reset) {
     // this is an awful hack
-    auto device_scale = device_scale_;
+    float device_scale = device_scale_;
     device_scale_ = 0;
     task_runner_->PostTask(
         FROM_HERE,
-        base::BindOnce(&OfficeWebPlugin::OnViewportChanged,
-                       base::Unretained(this), css_plugin_rect_, device_scale));
+        base::BindOnce(&OfficeWebPlugin::OnViewportChanged, GetWeakPtr(),
+                       css_plugin_rect_, device_scale));
   }
 
-  document_->setView(view_id_);
-  document_->resetSelection();
-
-  base::WeakPtr<office::EventBus> event_bus(client->GetEventBus());
-
-  if (event_bus) {
-    event_bus->Handle(
-        LOK_CALLBACK_DOCUMENT_SIZE_CHANGED,
-        base::BindRepeating(&OfficeWebPlugin::HandleDocumentSizeChanged,
-                            base::Unretained(this)));
-    event_bus->Handle(
-        LOK_CALLBACK_INVALIDATE_TILES,
-        base::BindRepeating(&OfficeWebPlugin::HandleInvalidateTiles,
-                            base::Unretained(this)));
-    event_bus->Handle(
-        LOK_CALLBACK_INVALIDATE_VISIBLE_CURSOR,
-        base::BindRepeating(&OfficeWebPlugin::HandleCursorInvalidated,
-                            base::Unretained(this)));
+  if (!needs_restore) {
+    document_->resetSelection();
   }
+
+  document_.AddDocumentObserver(LOK_CALLBACK_DOCUMENT_SIZE_CHANGED, this);
+  document_.AddDocumentObserver(LOK_CALLBACK_INVALIDATE_TILES, this);
+  document_.AddDocumentObserver(LOK_CALLBACK_INVALIDATE_VISIBLE_CURSOR, this);
+  registered_observers_ = true;
+
   if (needs_reset) {
     task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&OfficeWebPlugin::OnGeometryChanged,
+                                  GetWeakPtr(), viewport_zoom_, device_scale_));
+    task_runner_->PostTask(
         FROM_HERE,
-        base::BindOnce(&OfficeWebPlugin::OnGeometryChanged,
-                       base::Unretained(this), viewport_zoom_, device_scale_));
-    task_runner_->PostTask(FROM_HERE,
-                           base::BindOnce(&OfficeWebPlugin::UpdateScroll,
-                                          base::Unretained(this), 0));
+        base::BindOnce(&OfficeWebPlugin::UpdateScroll, GetWeakPtr(), 0));
   }
-  return true;
+  if (needs_restore) {
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&OfficeWebPlugin::OnGeometryChanged,
+                                  GetWeakPtr(), viewport_zoom_, device_scale_));
+    paint_manager_->ResumePaint();
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&OfficeWebPlugin::UpdateScroll, GetWeakPtr(),
+                                  scroll_y_position_));
+  }
+
+  return restore_key_.ToString();
 }
 
 void OfficeWebPlugin::ScheduleAvailableAreaPaint(bool invalidate) {
   gfx::RectF offset_area(available_area_);
-  offset_area.Offset(0, scroll_y_position_ * device_scale_);
+  offset_area.Offset(0, scroll_y_position_);
   auto view_height = offset_area.height();
+  // this is a crash case that should not occur anymore
+  if (tile_buffer_->IsEmpty()) {
+    LOG(ERROR) << "Full area paint, but tile buffer is empty";
+    return;
+  }
   auto range = tile_buffer_->InvalidateTilesInRect(offset_area, !invalidate);
   auto limit = tile_buffer_->LimitIndex(scroll_y_position_, view_height);
 
@@ -877,16 +956,15 @@ void OfficeWebPlugin::ScheduleAvailableAreaPaint(bool invalidate) {
 
 void OfficeWebPlugin::TriggerFullRerender() {
   first_paint_ = true;
-  if (document_client_ && !document_client_->DocumentSizeTwips().IsEmpty()) {
+  if (document_client_.MaybeValid() &&
+      !document_client_->DocumentSizeTwips().IsEmpty()) {
     tile_buffer_->InvalidateAllTiles();
     ScheduleAvailableAreaPaint();
   }
 }
 
-office::TileBuffer* OfficeWebPlugin::GetTileBuffer() {
-  // TODO: maybe use a scoped ref pointer or shared pointer, but if the cancel
-  // flag is invalid, shouldn't matter
-  return tile_buffer_.get();
+scoped_refptr<office::TileBuffer> OfficeWebPlugin::GetTileBuffer() {
+  return tile_buffer_;
 }
 
 base::WeakPtr<office::PaintManager::Client> OfficeWebPlugin::GetWeakClient() {
@@ -910,15 +988,38 @@ void OfficeWebPlugin::DebounceUpdates(int interval) {
 }
 
 void OfficeWebPlugin::TryResumePaint() {
-  if (update_debounce_timer_) update_debounce_timer_->Reset();
+  if (update_debounce_timer_)
+    update_debounce_timer_->Reset();
 }
 
 void OfficeWebPlugin::DebouncedResumePaint() {
-  if (!paint_manager_) return;
+  if (!paint_manager_)
+    return;
 
   paint_manager_->ResumePaint();
 }
 
-// } blink::WebPlugin
+void OfficeWebPlugin::DocumentCallback(int type, std::string payload) {
+  switch (type) {
+    case LOK_CALLBACK_DOCUMENT_SIZE_CHANGED: {
+      if (!document_)
+        return;
+      long width, height;
+      document_->getDocumentSize(&width, &height);
+      tile_buffer_->Resize(width, height);
+      break;
+    }
+    case LOK_CALLBACK_INVALIDATE_TILES: {
+      HandleInvalidateTiles(payload);
+      break;
+    }
+    case LOK_CALLBACK_INVALIDATE_VISIBLE_CURSOR: {
+      if (!payload.empty()) {
+        last_cursor_rect_ = std::move(payload);
+      }
+      break;
+    }
+  }
+}
 
 }  // namespace electron

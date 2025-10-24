@@ -6,10 +6,7 @@
 // rights reserved. Use of this source code is governed by a BSD-style license
 // that can be found in the LICENSE file in src/.
 
-#ifndef OFFICE_OFFICE_WEB_PLUGIN_H_
-#define OFFICE_OFFICE_WEB_PLUGIN_H_
-
-#include <stdint.h>
+#pragma once
 
 #include <memory>
 #include <string>
@@ -18,28 +15,20 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "cc/paint/paint_image.h"
-#include "cc/paint/paint_image_builder.h"
 #include "gin/handle.h"
-#include "include/core/SkImage.h"
+#include "office/destroyed_observer.h"
 #include "office/document_client.h"
-#include "office/event_bus.h"
+#include "office/document_event_observer.h"
+#include "office/document_holder.h"
 #include "office/lok_tilebuffer.h"
 #include "office/office_client.h"
 #include "office/paint_manager.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
-#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/platform/web_input_event_result.h"
-#include "third_party/blink/public/platform/web_string.h"
-#include "third_party/blink/public/platform/web_text_input_type.h"
 #include "third_party/blink/public/web/web_plugin.h"
-#include "third_party/blink/public/web/web_plugin_container.h"
 #include "third_party/blink/public/web/web_plugin_params.h"
-#include "third_party/blink/public/web/web_print_params.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/geometry/size_f.h"
-#include "ui/gfx/geometry/vector2d_f.h"
 #include "v8/include/v8-template.h"
 #include "v8/include/v8-value.h"
 
@@ -50,6 +39,10 @@ class Document;
 namespace content {
 class RenderFrame;
 }  // namespace content
+
+namespace blink {
+class WebPluginContainer;
+}
 
 namespace electron {
 
@@ -67,9 +60,11 @@ blink::WebPlugin* CreateInternalPlugin(blink::WebPluginParams params,
 }  // namespace office
 
 class OfficeWebPlugin : public blink::WebPlugin,
-                        public office::PaintManager::Client {
+                        public office::PaintManager::Client,
+                        public office::DocumentEventObserver,
+                        public office::DestroyedObserver {
  public:
-  OfficeWebPlugin(blink::WebPluginParams params,
+  OfficeWebPlugin(blink::WebPluginParams /*params*/,
                   content::RenderFrame* render_frame);
 
   // disable copy
@@ -81,9 +76,7 @@ class OfficeWebPlugin : public blink::WebPlugin,
   void Destroy() override;
   blink::WebPluginContainer* Container() const override;
   v8::Local<v8::Object> V8ScriptableObject(v8::Isolate* isolate) override;
-  bool SupportsKeyboardFocus() const override;
 
-  void UpdateAllLifecyclePhases(blink::DocumentUpdateReason reason) override;
   void Paint(cc::PaintCanvas* canvas, const gfx::Rect& rect) override;
 
   void UpdateGeometry(const gfx::Rect& window_rect,
@@ -96,7 +89,11 @@ class OfficeWebPlugin : public blink::WebPlugin,
       const blink::WebCoalescedInputEvent& event,
       ui::Cursor* cursor) override;
 
+  // constant
+  bool SupportsKeyboardFocus() const override;
+
   // no-op
+  void UpdateAllLifecyclePhases(blink::DocumentUpdateReason reason) override;
   void DidReceiveResponse(const blink::WebURLResponse& response) override;
   void DidReceiveData(const char* data, size_t data_length) override;
   void DidFinishLoading() override;
@@ -164,7 +161,7 @@ class OfficeWebPlugin : public blink::WebPlugin,
   // PaintManager::Client
   void InvalidatePluginContainer() override;
   base::WeakPtr<office::PaintManager::Client> GetWeakClient() override;
-  office::TileBuffer* GetTileBuffer() override;
+  scoped_refptr<office::TileBuffer> GetTileBuffer() override;
 
   content::RenderFrame* render_frame() const;
 
@@ -173,13 +170,17 @@ class OfficeWebPlugin : public blink::WebPlugin,
   base::WeakPtr<OfficeWebPlugin> GetWeakPtr();
   void UpdateSnapshot(const office::Snapshot snapshot);
 
+  // DocumentEventObserver
+  void DocumentCallback(int type, std::string payload) override;
+
+  // DestroyedObserver
+  void OnDestroyed() override;
+
  private:
   // call `Destroy()` instead.
   ~OfficeWebPlugin() override;
   blink::WebInputEventResult HandleKeyEvent(const blink::WebKeyboardEvent event,
                                             ui::Cursor* cursor);
-  blink::WebInputEventResult HandleCutCopyEvent(std::string event);
-  blink::WebInputEventResult HandlePasteEvent();
   bool HandleMouseEvent(blink::WebInputEvent::Type type,
                         gfx::PointF position,
                         int modifiers,
@@ -195,7 +196,7 @@ class OfficeWebPlugin : public blink::WebPlugin,
   void OnViewportChanged(const gfx::Rect& plugin_rect_in_css_pixel,
                          float new_device_scale);
 
-  void UpdateScroll(int y_position);
+  void UpdateScroll(int64_t y_position);
 
   float TwipToPx(float in);
   float TotalScale();
@@ -204,15 +205,17 @@ class OfficeWebPlugin : public blink::WebPlugin,
   gfx::Size GetDocumentCSSPixelSize();
   std::vector<gfx::Rect> PageRects();
   void SetZoom(float zoom);
+  void InvalidateAllTiles();
   float GetZoom();
   float TwipToCSSPx(float in);
 
   // updates the first and last intersecting page number within view
   void UpdateIntersectingPages();
 
-  // prepares the embed as the document client's mounted viewer
-  bool RenderDocument(v8::Isolate* isolate,
-                      gin::Handle<office::DocumentClient> client);
+  // renders the document in the plugin and assigns a unique key
+  std::string RenderDocument(v8::Isolate* isolate,
+                             gin::Handle<office::DocumentClient> client,
+                             gin::Arguments* args);
   // debounces the renders at the specified interval
   void DebounceUpdates(int interval);
 
@@ -266,19 +269,19 @@ class OfficeWebPlugin : public blink::WebPlugin,
   // current cursor
   ui::mojom::CursorType cursor_type_ = ui::mojom::CursorType::kPointer;
   bool has_focus_;
-  std::string last_cursor_;
+  std::string last_cursor_rect_;
+  base::TimeTicks last_css_cursor_time_ = base::TimeTicks();
   // }
 
   // owned by
   content::RenderFrame* render_frame_ = nullptr;
 
   // maybe has a
-  lok::Document* document_ = nullptr;
-  office::DocumentClient* document_client_ = nullptr;
-  int view_id_ = -1;
+  office::DocumentHolderWithView document_;
+  base::WeakPtr<office::DocumentClient> document_client_;
 
   // painting
-  std::unique_ptr<office::TileBuffer> tile_buffer_;
+  scoped_refptr<office::TileBuffer> tile_buffer_;
   std::unique_ptr<office::PaintManager> paint_manager_;
   bool take_snapshot_ = true;
   office::Snapshot snapshot_;
@@ -286,8 +289,12 @@ class OfficeWebPlugin : public blink::WebPlugin,
   std::vector<gfx::Rect> page_rects_cached_;
   int first_intersect_ = -1;
   int last_intersect_ = -1;
+  base::Token restore_key_;
 
-  bool visible_;
+  bool visible_ = true;
+  bool disable_input_ = false;
+  bool doomed_ = false;
+  bool registered_observers_ = false;
 
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
   office::CancelFlagPtr paint_cancel_flag_;
@@ -296,8 +303,6 @@ class OfficeWebPlugin : public blink::WebPlugin,
   v8::Global<v8::ObjectTemplate> v8_template_;
   v8::Global<v8::Object> v8_object_;
 
-  v8::Persistent<v8::Object> rendered_client_;
-
   std::unique_ptr<base::DelayTimer> update_debounce_timer_;
 
   // invalidates when destroy() is called, must be last
@@ -305,4 +310,3 @@ class OfficeWebPlugin : public blink::WebPlugin,
 };
 
 }  // namespace electron
-#endif  // OFFICE_OFFICE_WEB_PLUGIN_H_

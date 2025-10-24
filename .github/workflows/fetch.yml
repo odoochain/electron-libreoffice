@@ -5,31 +5,9 @@ on:
       runner_label:
         required: true
         type: string
-    secrets:
-      EC2_RUNNER_AWS_ID:
-        required: true
-      EC2_RUNNER_AWS_SECRET:
-        required: true
-      instance_id:
-        required: true
 
 jobs:
-  start_runner:
-    name: Start EC2 Runner
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup AWS
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.EC2_RUNNER_AWS_ID }}
-          aws-secret-access-key: ${{ secrets.EC2_RUNNER_AWS_SECRET }}
-          aws-region: us-east-1
-      - name: Start
-        run: aws ec2 start-instances --instance-ids ${{ secrets.instance_id }}
-      - name: Wait
-        run: aws ec2 wait instance-status-ok --instance-ids ${{ secrets.instance_id }}
   fetch:
-    needs: [start_runner]
     continue-on-error: true # Required to stop the EC2 runner
     name: All Platforms
     runs-on:
@@ -45,74 +23,65 @@ jobs:
       GOMA_START_COMPILER_PROXY: true
       GOMA_FALLBACK_ON_AUTH_FAILURE: true
     steps:
-      - name: Linux - Create RAM disk
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo umount /r || true
-          sudo rm -rf /r || true
-          sudo mkdir /r
-          sudo mount -t tmpfs -o size=200g tmpfs /r
-      - name: Linux - Setup working dir
-        if: ${{ runner.os == 'Linux' }}
-        working-directory: /
-        run: |
-          UID_GID="$(id -u):$(id -g)"
-          sudo mkdir /r/el
-          sudo chown $UID_GID /r/el
       - name: Turn off line ending conversion in git
         run: |
-          cd /r/el
           git config --global core.autocrlf false
           git config --global core.eol lf
       - name: Checkout
         run: |
-          git -c protocol.version=2 clone --depth=1 https://${{ github.token }}@github.com/${{ github.repository }} /r/el
-          cd /r/el
+          rm -rf el
+          git -c protocol.version=2 clone --depth=1 https://${{ github.token }}@github.com/${{ github.repository }} el
+          cd el
           git config --local gc.auto 0
       - name: Generate deps hash
         id: deps_hash
         run: |
-          cd /r/el/src/electron
+          cd el/src/electron
           node script/generate-deps-hash.js
           echo "deps_hash=$(cat .depshash-platformless)" >> $GITHUB_OUTPUT
       - name: Retrieve cache (base)
         id: cache-src-base
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v3
         with:
           path: |
             base.tzstd
             dawn-angle.tzstd
             thirdparty.tzstd
           key: src-${{ steps.deps_hash.outputs.deps_hash }}-base
+          lookup-only: true
+          enableCrossOsArchive: true
       - name: Retrieve cache (linux)
         id: cache-src-linux
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v3
         with:
           path: |
             linux.tzstd
           key: src-${{ steps.deps_hash.outputs.deps_hash }}-linux
+          lookup-only: true
+          enableCrossOsArchive: true
       - name: Retrieve cache (windows)
         id: cache-src-windows
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v3
         with:
           path: |
             windows.tzstd
           key: src-${{ steps.deps_hash.outputs.deps_hash }}-windows
+          lookup-only: true
+          enableCrossOsArchive: true
       - name: Check cache
         id: check_cache
         run: |
           echo "build_cache=${{ steps.cache-src-base.outputs.cache-hit != 'true' || steps.cache-src-linux.outputs.cache-hit != 'true' || steps.cache-src-windows.outputs.cache-hit != 'true' }}" >> $GITHUB_OUTPUT
-      - name: Install node.js v16
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
-          sudo apt-get install -y nodejs
+      - name: Setup Node v16
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
       - name: Create tarballs for all platforms
         if: ${{ runner.os == 'Linux' && steps.check_cache.outputs.build_cache == 'true' }}
         run: |
           sudo apt update
           sudo apt-get install --only-upgrade curl libcurl3-gnutls libcurl4
-          cd /r/el
+          cd el
           scripts/prepare-cross-sync-tar.sh
           cp -rf *.tzstd "$GITHUB_WORKSPACE"
       - name: Linux - Remove RAM disk
@@ -120,26 +89,33 @@ jobs:
         run: |
           sudo umount /r || true
           sudo rm -rf /r || true
+      - name: Save cache (base)
+        uses: actions/cache/save@v3
+        if: ${{ steps.cache-src-base.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            base.tzstd
+            dawn-angle.tzstd
+            thirdparty.tzstd
+          key: src-${{ steps.deps_hash.outputs.deps_hash }}-base
+          enableCrossOsArchive: true
+      - name: Retrieve cache (linux)
+        uses: actions/cache/save@v3
+        if: ${{ steps.cache-src-linux.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            linux.tzstd
+          key: src-${{ steps.deps_hash.outputs.deps_hash }}-linux
+          enableCrossOsArchive: true
+      - name: Retrieve cache (windows)
+        uses: actions/cache/save@v3
+        if: ${{ steps.cache-src-windows.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            windows.tzstd
+          key: src-${{ steps.deps_hash.outputs.deps_hash }}-windows
+          enableCrossOsArchive: true
       - name: The job has succeeded
         if: ${{ success() }}
         id: check
         run: echo "check=true" >> $GITHUB_OUTPUT
-  stop_runner:
-    name: Stop EC2 Runner
-    needs: [fetch]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup AWS-CLI
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.EC2_RUNNER_AWS_ID }}
-          aws-secret-access-key: ${{ secrets.EC2_RUNNER_AWS_SECRET }}
-          aws-region: us-east-1
-      - name: Stop Runner
-        run: aws ec2 stop-instances --instance-ids ${{ secrets.instance_id }}
-      - name: Wait for Runner to be stopped
-        run: aws ec2 wait instance-stopped --instance-ids ${{ secrets.instance_id }}
-      - name: Fail the workflow if test failed
-        if: ${{ needs.fetch.outputs.succeeded != 'true' }}
-        run: |
-          false

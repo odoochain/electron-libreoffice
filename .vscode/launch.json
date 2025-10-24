@@ -1,0 +1,41 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    // you must have the CodeLLDB extension installed for this to work!
+    {
+      "type": "lldb",
+      "request": "attach",
+      "name": "Debug (Attach)",
+      "osx": {
+        "program": "${workspaceFolder}/src/out/Default/Electron.app/Contents/Frameworks/Electron Helper (Renderer).app/Contents/MacOS/Electron Helper (Renderer)",
+      },
+      "linux": {
+        "program": "${workspaceFolder}/src/out/Default/electron",
+      },
+      "windows": {
+        "program": "${workspaceFolder}/src/out/Default/Electron.exe",
+      },
+      "initCommands": [
+        // make sure we have all the symbols
+        "settings set target.exec-search-paths '${workspaceFolder}/src/out/Default' '${workspaceFolder}/src/third_party/libreofficekit/instdir'",
+        // ready now
+        "settings set target.env-vars CHROMIUM_LLDBINIT_SOURCED=1",
+      ],
+      "postRunCommands": [
+        // force loading C++ symbols
+        "command script import ${workspaceFolder}/eloklldb/libcxx_chrome_fix.py",
+      ],
+      "pid": "${command:pickProcess}",
+      "sourceLanguages": [
+        "c++"
+      ],
+      "breakpointMode": "file",
+      "sourceMap": {
+        "../..": "${workspaceFolder}/src"
+      },
+    },
+  ]
+}

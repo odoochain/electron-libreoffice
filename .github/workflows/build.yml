@@ -10,33 +10,10 @@ on:
         type: string
       working_dir:
         required: false
-        default: '/r/el'
+        default: 'el'
         type: string
-    secrets:
-      EC2_RUNNER_AWS_ID:
-        required: true
-      EC2_RUNNER_AWS_SECRET:
-        required: true
-      instance_id:
-        required: true
-
 jobs:
-  start_runner:
-    name: Start EC2 Runner
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup AWS
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.EC2_RUNNER_AWS_ID }}
-          aws-secret-access-key: ${{ secrets.EC2_RUNNER_AWS_SECRET }}
-          aws-region: us-east-1
-      - name: Start
-        run: aws ec2 start-instances --instance-ids ${{ secrets.instance_id }}
-      - name: Wait
-        run: aws ec2 wait instance-status-ok --instance-ids ${{ secrets.instance_id }}
   build:
-    needs: [start_runner]
     continue-on-error: true # Required to stop the EC2 runner
     name: Build
     runs-on:
@@ -53,51 +30,31 @@ jobs:
       GOMA_START_COMPILER_PROXY: true
       GOMA_FALLBACK_ON_AUTH_FAILURE: true
     steps:
+      - name: Remove Strawberry Perl from PATH (https://github.com/actions/runner-images/issues/8598 8622)
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          $env:PATH = $env:PATH -replace "C:\\Strawberry\\c\\bin;", "" 
+          "PATH=$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+        shell: powershell
       - name: Windows - Speed up cache
         if: ${{ runner.os == 'Windows' }}
         shell: cmd
         run: |
           echo "Adding GNU tar to PATH"
           echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
-      - name: Windows - Create RAM disk
-        if: ${{ runner.os == 'Windows' }}
-        shell: cmd
-        run: |
-          imdisk.exe -a -o awe -s 128G -m R: -p "/fs:ntfs /q /y"
-          cd /d R:
-      - name: Linux - Create RAM disk
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo umount /r || true
-          sudo rm -rf /r || true
-          sudo mkdir /r
-          sudo mount -t tmpfs -o size=128g tmpfs /r
-      - name: Linux - Setup working dir
-        if: ${{ runner.os == 'Linux' }}
-        working-directory: /
-        run: |
-          UID_GID="$(id -u):$(id -g)"
-          sudo mkdir ${{ inputs.working_dir }}
-          sudo chown $UID_GID ${{ inputs.working_dir }}
-      - name: Windows - Setup working dir
-        working-directory: C:\
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          mkdir ${{ inputs.working_dir }}
       - name: Turn off line ending conversion in git
         run: |
-          cd ${{ inputs.working_dir }}
           git config --global core.autocrlf false
           git config --global core.eol lf
       - name: Fix git on Windows
         if: ${{ runner.os == 'Windows' }}
         run: |
-          cd ${{ inputs.working_dir }}
           git config --global core.symlinks false
           git config --global core.longpaths true
       - name: Checkout
         run: |
-          git -c protocol.version=2 clone --depth=1 https://${{ github.token }}@github.com/${{ github.repository }} '${{ inputs.working_dir }}'
+          rm -rf ${{ inputs.working_dir }}
+          git -c protocol.version=2 clone --depth=1 --branch=${{ github.ref_name }} --single-branch https://${{ github.token }}@github.com/${{ github.repository }} '${{ inputs.working_dir }}'
           cd ${{ inputs.working_dir }}
           git config --local gc.auto 0
       - name: Generate deps hash
@@ -108,29 +65,32 @@ jobs:
           echo "deps_hash=$(cat .depshash-platformless)" >> $GITHUB_OUTPUT
       - name: Retrieve cache (base)
         id: cache-src-base
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v3
         with:
           path: |
             base.tzstd
             dawn-angle.tzstd
             thirdparty.tzstd
           key: src-${{ steps.deps_hash.outputs.deps_hash }}-base
+          enableCrossOsArchive: true
       - name: Retrieve cache (linux)
         if: ${{ runner.os == 'Linux' }}
         id: cache-src-linux
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v3
         with:
           path: |
             linux.tzstd
           key: src-${{ steps.deps_hash.outputs.deps_hash }}-linux
+          enableCrossOsArchive: true
       - name: Retrieve cache (windows)
         if: ${{ runner.os == 'Windows' }}
         id: cache-src-windows
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v3
         with:
           path: |
             windows.tzstd
           key: src-${{ steps.deps_hash.outputs.deps_hash }}-windows
+          enableCrossOsArchive: true
       - name: Extract cache
         run: |
           cd "${{ inputs.working_dir }}"
@@ -152,11 +112,10 @@ jobs:
               tar --zstd --overwrite -xf "$EL_WORKSPACE/windows.tzstd"
               ;;
           esac
-      - name: Linux - Install node.js v16
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
-          sudo apt-get install -y nodejs
+      - name: Setup Node v16
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
       - name: Linux - Install zip
         if: ${{ runner.os == 'Linux' }}
         run: |
@@ -183,13 +142,23 @@ jobs:
       - name: Windows - Fix Clang toolchain
         if: ${{ runner.os == 'Windows' }}
         run: |
-          Set-Location R:\el
-          $env:PATH = 'R:\el\src\third_party\depot_tools;' + $env:PATH
+          cd el
+          $env:PATH = "$(Get-Location)\src\third_party\depot_tools;" + $env:PATH
           & cmd /c call src\third_party\depot_tools\cipd_bin_setup.bat
           & cmd /c call src\third_party\depot_tools\bootstrap\win_tools.bat
           & cmd /c call src\third_party\depot_tools\vpython3.bat src\tools\clang\scripts\update.py
           & cmd /c call src\third_party\depot_tools\vpython3.bat src/third_party/depot_tools/download_from_google_storage.py --no_resume --no_auth --bucket chromium-browser-clang/rc -s src/build/toolchain/win/rc/win/rc.exe.sha1
         shell: powershell
+      - name: Windows - Fix Esbuild
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          cd ${{ inputs.working_dir }}
+          scripts/e setup
+          # Fix esbuild with a known good executable
+          FIXING_ESBUILD="src/third_party/devtools-frontend/src/third_party/esbuild"
+          mkdir -p "$FIXING_ESBUILD"
+          curl -LO "https://github.com/coparse-inc/electron-libreoffice/releases/download/missingtools/esbuild.exe"
+        shell: bash
       - name: Build
         id: build
         run: |
@@ -249,26 +218,3 @@ jobs:
           body: |
             This is an automated release built from the `main` branch.
             For changes, please review the commit log.
-      - name: The job has succeeded
-        if: ${{ success() }}
-        id: check
-        run: echo "check=true" >> $GITHUB_OUTPUT
-  stop_runner:
-    name: Stop EC2 Runner
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup AWS-CLI
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.EC2_RUNNER_AWS_ID }}
-          aws-secret-access-key: ${{ secrets.EC2_RUNNER_AWS_SECRET }}
-          aws-region: us-east-1
-      - name: Stop Runner
-        run: aws ec2 stop-instances --instance-ids ${{ secrets.instance_id }}
-      - name: Wait for Runner to be stopped
-        run: aws ec2 wait instance-stopped --instance-ids ${{ secrets.instance_id }}
-      - name: Fail the workflow if test failed
-        if: ${{ needs.build.outputs.succeeded != 'true' }}
-        run: |
-          false

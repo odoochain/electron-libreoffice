@@ -2,15 +2,12 @@
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
-#include "document_client.h"
-#include "office_client.h"
-
-#include "gin/converter.h"
-#include "office/test/office_test.h"
-#include "testing/gtest/include/gtest/gtest.h"
+#include "office/document_client.h"
+#include "gtest/gtest.h"
 
 namespace electron::office {
-
-using DocumentClientTest = OfficeTest;
-
+// Probably not needed in any practical application, solely for test coverage and Chromium style rules
+TEST(DocumentClientTest, DoesNotCrashOutsideOfV8) {
+	DocumentClient client;
+}
 }  // namespace electron::office
